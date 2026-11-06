@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, writeFile, rename, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { UsageService } from '../src/service.js';
 import { UsageIndex } from '../src/indexer.js';
 import { resolveBinding } from '../src/binding.js';
@@ -28,6 +29,21 @@ test('request ownership, inherited duplicate history, mixed models and nested ag
     const legacy = await service.query({}, { threadId: ids.legacy }, true);
     assert.equal(legacy.selected?.totals.total, 550); assert.equal(legacy.selected?.totals.cached, null);
     assert.equal(legacy.selected?.totals.cacheRate, null); assert.equal(legacy.selected?.totals.requests, 0);
+  } finally { await service.close(); }
+});
+
+test('an aliased Codex home indexes its logs but does not follow nested links outside it', async () => {
+  const data = await fixture();
+  const alias = join(data.root, 'home-alias'), external = join(data.root, 'external');
+  await symlink(data.codexHome, alias, 'junction');
+  await mkdir(external);
+  await writeFile(join(external, 'outside.jsonl'), line('session_meta', { id: ids.main }) + request(ids.main, 'outside', 'turn-a', 100, 0, 10));
+  await symlink(external, join(data.codexHome, 'sessions', 'linked'), 'junction');
+  const service = new UsageService({ ...data, codexHome: alias });
+  try {
+    const result = await service.query({ includeChildren: false }, { threadId: ids.main }, true);
+    assert.equal(result.selected?.totals.total, 2480000);
+    assert.deepEqual(result.index.sourceWarnings, []);
   } finally { await service.close(); }
 });
 

@@ -126,6 +126,8 @@ export class UsageIndex {
     this.statusUpdate({ error: null, completedFiles: 0 });
     const catalog = await this.catalog();
     const files = await this.logFiles();
+    // Compare like paths: the configured home can contain a Windows short name or a junction.
+    const logRoot = files.length ? await realpath(this.codexHome) : this.codexHome;
     const priority = new Set<string>(priorityId ? [priorityId] : []);
     const descendants = new Map<string, string[]>();
     for (const t of catalog.threads) if (t.parentId) {
@@ -152,7 +154,7 @@ export class UsageIndex {
       const saved = this.db.prepare('SELECT data FROM sources WHERE path=?').get(path);
       const previous = saved ? JSON.parse(String(saved.data)) as SourceRow : null;
       try {
-        const resolved = await realpath(path), allowed = relative(this.codexHome, resolved);
+        const resolved = await realpath(path), allowed = relative(logRoot, resolved);
         if (allowed.startsWith('..') || isAbsolute(allowed)) throw new Error('日志路径超出数据目录');
         const before = await lstat(path);
         if (!before.isFile() || before.isSymbolicLink()) throw new Error('跳过非普通日志文件');
