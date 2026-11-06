@@ -5,6 +5,7 @@ import { UsageService } from '../src/service.js';
 import { UsageIndex } from '../src/indexer.js';
 import { fixture, ids, request } from './fixtures.js';
 import { panelResult, usageSummary } from '../src/tool-result.js';
+import { getDashboard } from '../src/dashboard.js';
 
 test('warm navigation reuses the committed index and does not wait for background scanning', async () => {
   const source = await fixture(), service = new UsageService(source);
@@ -28,11 +29,6 @@ test('warm navigation reuses the committed index and does not wait for backgroun
       assert.equal(searched.sessions.length, 1);
       assert.equal(searched.selected?.totals.total, 762000);
       assert.equal(reads, 0);
-      const status = service.index.status.bind(service.index);
-      service.index.status = () => ({ ...status(), lastIndexedAt: '2026-10-29T12:00:00.000Z' });
-      try {
-        assert.equal((await service.query({}, { threadId: ids.main })).asOf, '2026-10-29T12:00:00.000Z', 'completion time updates without rebuilding unchanged aggregates');
-      } finally { service.index.status = status; }
     } finally { release(); service.index.refresh = refresh; service.index.snapshot = snapshot; }
     service.index.refresh = async () => { throw new Error('Temporary index lock'); };
     try {
@@ -47,22 +43,40 @@ test('warm navigation reuses the committed index and does not wait for backgroun
   } finally { release(); await service.close(); }
 });
 
-test('cached aggregates invalidate after another index client commits new usage', async () => {
+test('real idle scans reuse the snapshot; a new request from another writer invalidates it', async t => {
   const source = await fixture(), service = new UsageService(source), other = new UsageIndex(source);
   try {
-    await service.query({}, { threadId: ids.main }, true);
+    const first = await service.query({}, { threadId: ids.main }, true);
+    const reads = t.mock.method(service.index, 'snapshot');
+    await other.refresh(ids.main, true);
+    const idle = await service.query({ refresh: true }, { threadId: ids.main });
+    assert.notEqual(idle.asOf, first.asOf);
+    assert.equal(reads.mock.callCount(), 0);
     await appendFile(source.files.main, request(ids.main, 'external-write', 'turn-b', 100, 80, 10));
     await other.refresh(ids.main, true);
     const result = await service.query({}, { threadId: ids.main });
     assert.equal(result.selected?.totals.total, 6200110);
-    assert.equal(result.selected?.models.reduce((sum, m) => sum + m.total, 0), 6200110);
+    assert.equal(reads.mock.callCount(), 1);
   } finally { await service.close(); await other.close(); }
+});
+
+test('one model with 150,000 requests reconciles without expanding records on the call stack', () => {
+  const count = 150_000;
+  const row = { path: 'main', owner: ids.main, threadId: ids.main, turnId: null, timestamp: '', model: 'model', effort: null,
+    input: 10, output: 2, total: 12, cached: 8, reasoning: 1, cacheWrite: 0 };
+  const result = getDashboard({ threads: [], sources: [], requests: Array.from({ length: count }, (_, i) => ({ ...row, offset: i, responseId: String(i) })),
+    status: { running: false, lastIndexedAt: null, totalFiles: 0, completedFiles: 0, error: null, sourceWarnings: [] } }, {}, { threadId: ids.main, source: 'host' });
+  assert.equal(result.selected?.models[0].requests, count);
+  assert.equal(result.selected?.models[0].total, count * 12);
 });
 
 test('chat results are bounded while app-only metadata retains full details', async () => {
   const source = await fixture(), service = new UsageService(source);
   try {
     const result = await service.query({ view: 'all' }, { threadId: ids.main }, true);
+    const compact = await service.query({ view: 'all', compactSessions: true }, { threadId: ids.main });
+    assert.deepEqual(compact.sessions, result.sessions.map(({ id, title, project, total, missingChildren }) => ({ id, title, project, total, missingChildren })));
+    assert.ok('input' in result.sessions[0], 'normal API callers retain detailed rows');
     result.sessions = Array.from({ length: 500 }, (_, i) => ({ ...result.sessions[0], id: `session-${i}` }));
     result.selected!.agents = Array.from({ length: 100 }, (_, i) => ({ ...result.selected!.agents[0], id: `agent-${i}` }));
     const panel = panelResult(result), summary = usageSummary(result);

@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { querySchema, type Dashboard, type Query } from './dashboard.js';
+import { querySchema, type Dashboard, type ParsedQuery } from './dashboard.js';
 import { getService } from './service.js';
 
-export async function startLocalWeb(html: string, port = 0, query: (input: Query) => Promise<Dashboard> = input => getService().query(input)) {
+export async function startLocalWeb(html: string, port = 0, query: (input: ParsedQuery) => Promise<Dashboard> = input => getService().queryParsed(input)) {
   const secret = randomBytes(32).toString('hex');
   let origin = '';
   const server = createServer(async (req, res) => {

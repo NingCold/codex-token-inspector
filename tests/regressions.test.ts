@@ -6,6 +6,23 @@ import { DatabaseSync } from 'node:sqlite';
 import { UsageService } from '../src/service.js';
 import { fixture, ids, line, context, request } from './fixtures.js';
 
+test('a token_count split across read blocks is recovered even from an older index', async () => {
+  const data = await fixture(), meta = line('session_meta', { id: ids.legacy });
+  const snapshot = line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 500, output_tokens: 50 } } });
+  const pad = 256 * 1024 - Buffer.byteLength(meta + line('message', '')) - snapshot.indexOf('token_count') - 3;
+  await writeFile(data.files.legacy, meta + line('message', 'x'.repeat(pad)) + snapshot);
+  const service = new UsageService(data);
+  try {
+    await service.index.refresh(ids.legacy, true);
+    const db = new DatabaseSync(join(data.dataDir, 'usage-v1.sqlite'));
+    try {
+      db.prepare("UPDATE sources SET data=json_set(data,'$.parserVersion',2,'$.state.lastSnapshot',NULL) WHERE path=?").run(data.files.legacy);
+    } finally { db.close(); }
+    const result = await service.query({}, { threadId: ids.legacy }, true);
+    assert.equal(result.selected?.totals.total, 550);
+  } finally { await service.close(); }
+});
+
 test('late model context backfills exact turns across scans without guessing ambiguous models', async () => {
   const data = await fixture();
   let service = new UsageService(data);
@@ -63,16 +80,18 @@ test('catalog parent relationships and guardian exclusions survive log supplemen
   try {
     db.prepare('UPDATE thread_spawn_edges SET parent_thread_id=? WHERE child_thread_id=?').run(ids.import, ids.code);
     db.prepare('UPDATE threads SET source=? WHERE id=?').run(JSON.stringify({ subagent: 'guardian_review' }), ids.docs);
+    db.prepare('INSERT INTO threads(id, source) VALUES(?, ?)').run('guardian-root', JSON.stringify({ subagent: 'guardian_review' }));
   } finally { db.close(); }
   const service = new UsageService(data);
   try {
     const main = await service.query({}, { threadId: ids.main }, true);
     assert.equal(main.selected?.totals.total, 2480000);
     assert.equal(main.selected?.childCount, 0);
-    const other = await service.query({}, { threadId: ids.import }, true);
+    const other = await service.query({ view: 'all', sessionId: ids.import }, undefined, true);
     assert.equal(other.selected?.totals.total, 3862000);
     assert.equal(other.selected?.agents.find(a => a.id === ids.code)?.parentId, ids.import);
-    assert.ok(!other.sessions.some(s => s.id === ids.docs));
+    assert.ok(other.sessions.some(s => s.id === ids.main));
+    assert.ok(!other.sessions.some(s => s.id === 'guardian-root'));
   } finally { await service.close(); }
 });
 
@@ -107,6 +126,7 @@ test('unsafe legacy snapshots report unknown usage while known scopes remain add
     assert.deepEqual(own.issues, []);
     const legacy = (await service.query({}, { threadId: ids.legacy }, true)).selected!;
     assert.equal(legacy.totals.total, 550);
+    assert.equal(legacy.models[0].requests, 0, 'a cumulative snapshot is not a request');
     assert.equal(legacy.agents[0].basis, 'snapshot');
     assert.equal(legacy.totals.unknownAgents, 0);
   } finally { await service.close(); }

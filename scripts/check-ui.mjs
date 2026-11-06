@@ -1,18 +1,20 @@
 import { chromium, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, writeFile, appendFile } from 'node:fs/promises';
+import { readFile, mkdir, appendFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fixture, ids, request } from '../tests/fixtures.ts';
 import { checkEmbeddedUi } from './check-embedded-ui.mjs';
-const layout = [];
+const screenshots = process.argv.includes('--screenshots');
+async function capture(target, name, options = {}) {
+  if (screenshots) await target.screenshot({ path: resolve('docs/screenshots', name), ...options });
+}
 async function checkCompactCards(page) {
   const heights = await page.locator('.metric').evaluateAll(nodes => nodes.map(n => n.getBoundingClientRect().height));
   if (heights.some(height => height > 104)) throw new Error(`Metrics are not compact: ${heights}`);
   const parent = await page.locator('tr:has(.root-agent)').boundingBox();
   const toggle = await page.locator('.children-control').boundingBox();
   if (!parent || !toggle || Math.abs(toggle.y - parent.y - parent.height) > 1 || toggle.height > 32) throw new Error('Child toggle must be a small row directly below the main agent');
-  layout.push({ width: page.viewportSize().width, metricHeights: heights, childToggleHeight: toggle.height });
 }
 async function checkSessionRows(page) {
   const row = page.locator('.session').first();
@@ -21,7 +23,6 @@ async function checkSessionRows(page) {
   for (let i = 1; i < parts.length; i++) {
     if (parts[i].x < parts[i - 1].x + parts[i - 1].width - 1 || Math.abs(parts[i].y + parts[i].height / 2 - parts[0].y - parts[0].height / 2) > 4) throw new Error('Session title, project, Token and arrow must appear on one line in that order');
   }
-  layout.push({ width: page.viewportSize().width, sessionRowHeight: (await row.boundingBox()).height });
   if (await page.locator('.session-row').evaluateAll(nodes => nodes.some(n => n.scrollWidth > n.clientWidth))) throw new Error('Long session titles or project names must not displace Token values');
 }
 const source = await fixture();
@@ -57,11 +58,12 @@ try {
   await page.getByRole('button', { name: '刷新', exact: true }).click(); await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '收起子代理（3）' })).toHaveAttribute('aria-expanded', 'true');
   await checkCompactCards(page);
-  await mkdir('docs/screenshots', { recursive: true }); await page.screenshot({ path: 'docs/screenshots/p1-desktop.png', fullPage: true });
+  if (screenshots) await mkdir('docs/screenshots', { recursive: true });
+  await capture(page, 'p1-desktop.png', { fullPage: true });
   await page.getByRole('button', { name: '全部会话', exact: true }).click();
   await expect(page.locator('.session').first()).toBeVisible();
   await checkSessionRows(page);
-  await page.screenshot({ path: 'docs/screenshots/v026-list-1440.png', fullPage: true });
+  await capture(page, 'v026-list-1440.png', { fullPage: true });
   await page.getByRole('button').filter({ hasText: '历史数据导入' }).click(); await expect(page.locator('.coverage')).toContainText('2 个子代理在本机未找到日志');
   await expect(page.locator('.coverage')).toContainText('1 次请求缺少可核对的模型上下文');
   await expect(page.locator('.metric').nth(0)).toContainText('1.75B');
@@ -86,7 +88,7 @@ try {
     await checkCompactCards(page);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     if (overflow) throw new Error(`Page overflows at width ${width}`);
-    await page.screenshot({ path: `docs/screenshots/p1-${width}.png`, fullPage: true });
+    await capture(page, `p1-${width}.png`, { fullPage: true });
     await page.getByRole('button', { name: '全部会话', exact: true }).click();
     await expect(page.locator('.session').nth(1)).toBeAttached();
     await checkSessionRows(page);
@@ -96,14 +98,15 @@ try {
     if (await page.locator('.list').evaluate(n => n.scrollWidth > n.clientWidth)) throw new Error('Session list must not scroll horizontally');
     await page.getByRole('button').filter({ hasText: '历史数据导入' }).click();
     await page.locator('.coverage summary').click();
-    await page.screenshot({ path: `docs/screenshots/v026-list-${width}.png`, fullPage: true });
+    await capture(page, `v026-list-${width}.png`, { fullPage: true });
     await page.getByRole('button', { name: '本会话', exact: true }).click();
   }
-  await page.setViewportSize({ width: 1440, height: 960 });
-  await page.emulateMedia({ colorScheme: 'dark' });
-  await page.screenshot({ path: 'docs/screenshots/p1-dark.png', fullPage: true });
-  await checkEmbeddedUi(browser, errors);
+  if (screenshots) {
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await capture(page, 'p1-dark.png', { fullPage: true });
+  }
+  await checkEmbeddedUi(browser, errors, capture);
   if (errors.length) throw new Error(errors.join('\n'));
-  await writeFile('docs/screenshots/p1-ui-check.json', JSON.stringify({ checkedAt: new Date().toISOString(), version: '0.2.7', passed: true, source: 'synthetic JSONL fixtures through the real index; embedded UI uses a simulated MCP host', sizes: [1440, 768, 375], layout, checks: ['compact session rows', 'title-project-Token-arrow order', 'long names without overflow', 'compact metric cards', 'child toggle below main agent', 'current binding', 'reload binding', 'parallel tab isolation', 'child scope', 'mixed models', 'refresh', 'incomplete coverage', 'search', 'empty state', 'responsive overflow', 'embedded explicit binding after browse/search', 'embedded auto refresh', 'unknown snapshot display', 'host binding priority', 'conflicting host IDs', 'compact transcript entry without polling', 'no resize notifications', 'private app data', 'host light/dark colors', 'removed explanatory copy', 'GMT+8 below refresh'], pageErrors: errors }, null, 2));
   console.log('UI checks passed: compact rows/cards, child toggle placement, scope, models, refresh, search, and three viewport sizes');
 } finally { await browser?.close(); child.kill(); }

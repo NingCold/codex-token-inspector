@@ -33,7 +33,7 @@ npx playwright install chromium --only-shell
 npm run test:ui
 ```
 
-界面测试覆盖本地网页和模拟 MCP 宿主。要验证真实聊天的会话绑定或面板入口，安装当前构建后，在桌面聊天中打开“本会话用量”。
+界面测试覆盖本地网页和模拟 MCP 宿主。需要对照布局时，运行 `npm run test:ui -- --screenshots`，截图保存在 `docs/screenshots/`。要验证真实聊天的会话绑定或面板入口，安装当前构建后，在桌面聊天中打开“本会话用量”。
 
 ## 接入自定义数据目录
 
@@ -44,7 +44,7 @@ npm run test:ui
 | `CODEX_HOME` | 指定要读取的 Codex 数据目录，默认是当前用户的 `~/.codex`。 |
 | `CTI_DATA_DIR` | 指定插件自己的 SQLite 索引目录。测试不同数据源时，为每个数据源使用独立目录。 |
 
-插件从 `sessions/`、`archived_sessions/` 读取日志，并只读打开兼容的 `state_*.sqlite` 获取会话元数据。
+Token 用量来自 `sessions/` 和 `archived_sessions/` 中的 JSONL 日志；会话标题和代理关系还会从 Codex 的 `state_*.sqlite` 只读获取。插件在自己的数据目录中维护 `usage-v1.sqlite`，保存请求记录和日志读取进度。它使用 Node.js 内置的 SQLite，无需安装数据库服务。
 
 ## 在 Codex 中加载构建
 

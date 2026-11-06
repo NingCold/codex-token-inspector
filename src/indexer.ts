@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { readdir, lstat, open, realpath } from 'node:fs/promises';
-import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { emptyState, metadata, parserVersion, scanLog } from './parser.js';
@@ -16,7 +16,6 @@ export class UsageIndex {
   private job: Promise<void> | null = null;
   private lastRefresh = 0;
   private stopped = false;
-  private revision = 0;
   constructor(options: IndexOptions = {}) {
     this.codexHome = resolve(options.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'));
     const sourceKey = createHash('sha256').update(this.codexHome).digest('hex').slice(0, 12);
@@ -25,16 +24,26 @@ export class UsageIndex {
     this.db = new DatabaseSync(join(this.dataDir, 'usage-v1.sqlite'));
     this.db.exec(`PRAGMA busy_timeout=1500; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT OR IGNORE INTO settings VALUES('dataRevision', '0');
       CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, until_ms INTEGER NOT NULL);
       INSERT OR IGNORE INTO lease VALUES(1, NULL, 0);
       CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sources (path TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (path TEXT NOT NULL, offset INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(path, offset));`);
+    // Every request batch commits its source checkpoint in the same transaction.
+    // Track these writes and catalog changes across connections, not lease or status updates.
+    for (const table of ['threads', 'sources']) {
+      const bump = "UPDATE settings SET value=value+1 WHERE key='dataRevision';";
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_insert_revision AFTER INSERT ON ${table}
+        BEGIN ${bump} END;
+        CREATE TRIGGER IF NOT EXISTS ${table}_update_revision AFTER UPDATE OF data ON ${table}
+        WHEN OLD.data <> NEW.data BEGIN ${bump} END;`);
+    }
   }
   private set(key: string, value: unknown) { this.db.prepare('INSERT INTO settings VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
   private get<T>(key: string, fallback: T): T { const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key); return row ? JSON.parse(String(row.value)) : fallback; }
-  private transaction(work: () => void) { this.db.exec('BEGIN IMMEDIATE'); try { work(); this.db.exec('COMMIT'); this.revision++; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
-  generation() { return `${this.revision}:${this.db.prepare('PRAGMA data_version').get()!.data_version}`; }
+  private transaction(work: () => void) { this.db.exec('BEGIN IMMEDIATE'); try { work(); this.db.exec('COMMIT'); } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
+  generation() { return this.get('dataRevision', 0); }
   private claim() {
     const now = Date.now();
     return Number(this.db.prepare('UPDATE lease SET owner=?, until_ms=? WHERE id=1 AND (until_ms < ? OR owner=?)').run(this.owner, now + 120000, now, this.owner).changes) === 1;
@@ -90,7 +99,8 @@ export class UsageIndex {
           if (!parsed.nickname && row.agent_path) parsed.nickname = String(row.agent_path);
           threads.push(parsed);
         }
-        for (const [child, parent] of parents) if (!threads.some(t => t.id === child)) threads.push({ id: child, title: child, cwd: '', updatedAt: 0, parentId: parent, kind: 'subagent', nickname: null, archived: false });
+        const known = new Set(threads.map(t => t.id));
+        for (const [child, parent] of parents) if (!known.has(child)) threads.push({ id: child, title: child, cwd: '', updatedAt: 0, parentId: parent, kind: 'subagent', nickname: null, archived: false });
         source.exec('COMMIT'); source.close(); return { threads, warnings };
       } catch { try { source?.close(); } catch {} warnings.push(`无法读取会话索引 ${name}，使用日志元数据补充`); }
     }
@@ -135,15 +145,19 @@ export class UsageIndex {
       descendants.get(t.parentId)!.push(t.id);
     }
     for (const id of priority) for (const child of descendants.get(id) ?? []) priority.add(child);
-    const priorityFile = (path: string) => [...priority].some(id => path.includes(id));
-    files.sort((a, b) => Number(priorityFile(b)) - Number(priorityFile(a)) || b.localeCompare(a));
+    const ids = [...priority];
+    const priorityFiles = new Set(files.filter(path => ids.some(id => path.includes(id))));
+    files.sort((a, b) => Number(priorityFiles.has(b)) - Number(priorityFiles.has(a)) || b.localeCompare(a));
     const discovered = new Set(files);
     this.transaction(() => {
       this.renew();
-      for (const t of catalog.threads) this.db.prepare('INSERT INTO threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(t.id, JSON.stringify(t));
-      for (const row of this.db.prepare('SELECT data FROM sources').all()) {
+      const upsert = this.db.prepare('INSERT INTO threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE threads.data <> excluded.data');
+      for (const t of catalog.threads) upsert.run(t.id, JSON.stringify(t));
+      for (const { path } of this.db.prepare('SELECT path FROM sources').all()) {
+        if (discovered.has(String(path))) continue;
+        const row = this.db.prepare('SELECT data FROM sources WHERE path=?').get(path)!;
         const source = JSON.parse(String(row.data)) as SourceRow;
-        if (!discovered.has(source.path)) { source.available = false; source.error = '日志文件未找到'; this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(source), source.path); }
+        if (source.available || source.error !== '日志文件未找到') { source.available = false; source.error = '日志文件未找到'; this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(source), source.path); }
       }
       this.statusUpdate({ totalFiles: files.length, sourceWarnings: catalog.warnings });
     });
@@ -176,11 +190,10 @@ export class UsageIndex {
           for (const record of parsed.records) insert.run(path, record.offset, JSON.stringify(record));
           this.db.prepare('INSERT INTO sources VALUES(?,?) ON CONFLICT(path) DO UPDATE SET data=excluded.data').run(path, JSON.stringify(source));
           if (source.state.metadata) this.db.prepare('INSERT OR IGNORE INTO threads VALUES(?,?)').run(source.state.metadata.id, JSON.stringify(source.state.metadata));
-          this.set('parserVersion', parserVersion);
           this.statusUpdate({ completedFiles: ++completed, lastIndexedAt: new Date().toISOString() });
         });
       } catch (e) {
-        if (previous) { previous.available = false; previous.error = e instanceof Error ? e.message : String(e); this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(previous), path); this.revision++; }
+        if (previous) { previous.available = false; previous.error = e instanceof Error ? e.message : String(e); this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(previous), path); }
         else catalog.warnings.push(`无法索引日志：${path.split(/[\\/]/).pop()}`);
         completed++;
       }

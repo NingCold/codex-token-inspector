@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { DatabaseSync } from 'node:sqlite';
 import { startLocalWeb } from '../src/local-web.js';
 import type { Dashboard } from '../src/dashboard.js';
 import { fixture, ids } from './fixtures.js';
@@ -54,7 +53,7 @@ test('bundled MCP server exposes global/thread apps and handles live tool calls'
 test('local fallback enforces host/origin/token, validates input, and preserves incomplete data state', async () => {
   const fixtureData = await fixture(), service = new UsageService(fixtureData);
   const html = await readFile('plugin/dist/dashboard.html', 'utf8');
-  const web = await startLocalWeb(html, 0, input => service.query(input, undefined, true));
+  const web = await startLocalWeb(html, 0, input => service.queryParsed(input, undefined, true));
   const token = new URLSearchParams(new URL(web.url).hash.slice(1)).get('access_token')!;
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, Origin: web.origin };
   try {
@@ -63,16 +62,11 @@ test('local fallback enforces host/origin/token, validates input, and preserves 
     const denied = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', body: '{}' }); assert.equal(denied.status, 403);
     const cross = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', headers: { ...headers, Origin: 'https://example.com' }, body: '{}' }); assert.equal(cross.status, 403);
     const malformed = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', headers, body: '{' }); assert.equal(malformed.status, 400);
+    const invalid = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', headers, body: '{"view":"invalid"}' }); assert.equal(invalid.status, 400);
     const result = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', headers, body: JSON.stringify({ sessionId: ids.import }) });
     const data = await result.json() as Dashboard;
     assert.equal(data.selected?.missingChildren, 2); assert.equal(data.selected?.totals.total, 762000);
     const empty = await fetch(`${web.origin}/api/dashboard`, { method: 'POST', headers, body: JSON.stringify({ view: 'all', search: 'no such session' }) });
     const noMatch = await empty.json() as Dashboard; assert.deepEqual(noMatch.sessions, []); assert.equal(noMatch.selected, null);
   } finally { await web.close(); await service.close(); }
-});
-
-test('Node native SQLite can transact for the future index without extra native dependencies', () => {
-  const db = new DatabaseSync(':memory:');
-  try { db.exec('CREATE TABLE requests (id TEXT PRIMARY KEY, tokens INTEGER); BEGIN'); db.prepare('INSERT INTO requests VALUES (?, ?)').run('probe', 42); db.exec('COMMIT'); assert.equal(db.prepare('SELECT sum(tokens) AS tokens FROM requests').get()?.tokens, 42); }
-  finally { db.close(); }
 });

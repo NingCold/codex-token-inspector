@@ -7,7 +7,7 @@ import { UsageService } from '../src/service.ts';
 import { panelResult } from '../src/tool-result.ts';
 
 // Exercise the actual bundled iframe and MCP Apps transport with a controlled host.
-export async function checkEmbeddedUi(browser, errors) {
+export async function checkEmbeddedUi(browser, errors, capture) {
   const source = await fixture();
   await writeFile(source.files.fork, line('session_meta', { id: ids.fork, forked_from_id: ids.main })
     + line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 500, output_tokens: 50 } } }));
@@ -98,7 +98,7 @@ export async function checkEmbeddedUi(browser, errors) {
     await expect(frame.locator('tbody .warning-badge')).toHaveText('用量未知');
     await frame.locator('.coverage summary').click();
     await expect(frame.locator('.coverage')).toContainText('无法确认本线程用量');
-    await frame.locator('.app').screenshot({ path: 'docs/screenshots/p1-unknown-snapshot.png' });
+    await capture(frame.locator('.app'), 'p1-unknown-snapshot.png');
 
     // Host colors must win even when switching from light to dark at runtime.
     await page.evaluate(() => document.querySelector('iframe').contentWindow.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: {
@@ -106,7 +106,7 @@ export async function checkEmbeddedUi(browser, errors) {
     } }, '*'));
     await expect(frame.locator('html')).toHaveCSS('background-color', 'rgb(24, 24, 24)');
     await expect(frame.locator('h1')).toHaveCSS('color', 'rgb(239, 239, 239)');
-    await frame.locator('.app').screenshot({ path: 'docs/screenshots/p1-host-dark.png' });
+    await capture(frame.locator('.app'), 'p1-host-dark.png');
 
     // History mounts stay compact and never publish viewport-dependent resize events.
     await frame.getByRole('checkbox', { name: '自动刷新' }).check();

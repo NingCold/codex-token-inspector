@@ -11,14 +11,14 @@ import { getService, closeService } from './service.js';
 import { panelResult, usageSummary } from './tool-result.js';
 
 const html = await readFile(new URL('./dashboard.html', import.meta.url), 'utf8');
-const URI = 'ui://codex-token-inspector/dashboard-v11.html';
+const URI = 'ui://codex-token-inspector/dashboard-v12.html';
 const annotation = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true };
 let local: Awaited<ReturnType<typeof startLocalWeb>> | undefined;
 let localStarting: Promise<Awaited<ReturnType<typeof startLocalWeb>>> | undefined;
 async function getLocalWeb() { return local ??= await (localStarting ??= startLocalWeb(html)); }
 
 function createServer() {
-  const server = new McpServer({ name: 'codex-token-inspector', version: '0.2.7' });
+  const server = new McpServer({ name: 'codex-token-inspector', version: '0.2.8' });
   registerAppResource(server, 'Token 用量面板', URI, { description: '本机真实 Token 用量、模型与子代理统计。' }, async () => ({ contents: [{
     uri: URI, mimeType: RESOURCE_MIME_TYPE, text: html,
     _meta: { ui: { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [] } },
@@ -32,16 +32,16 @@ function createServer() {
       title, description: entrypoint === 'thread' ? '打开当前会话的真实 Token 用量，自动使用宿主传入的 threadId。宿主缺少上下文时可显式传 sessionId。' : '打开全部会话的真实 Token 用量看板。',
       inputSchema: z.object({ sessionId: z.string().max(100).optional() }), annotations: annotation,
       _meta: { ui: { resourceUri: URI, visibility: ['model', 'app'] }, 'openai/ui': { entrypoints: [{ type: entrypoint }] } },
-    }, async (args, context) => panelResult(await getService().query({ ...args, view: entrypoint === 'thread' ? 'current' : 'all' }, context.mcpReq._meta)));
+    }, async (args, context) => panelResult(await getService().query({ ...args, view: entrypoint === 'thread' ? 'current' : 'all', compactSessions: true }, context.mcpReq._meta)));
   }
   server.registerTool('query_usage_dashboard', {
     title: '查询用量面板', description: '查询本机日志中的真实 Token 用量。current 自动关联当前会话；all 浏览全部主会话。包括模型、子代理、索引进度及覆盖诊断。',
     inputSchema: querySchema, annotations: annotation,
-  }, async (args, context) => ({ content: [{ type: 'text' as const, text: 'Token 用量查询结果。' }], structuredContent: usageSummary(await getService().query(args, context.mcpReq._meta)) }));
+  }, async (args, context) => ({ content: [{ type: 'text' as const, text: 'Token 用量查询结果。' }], structuredContent: usageSummary(await getService().queryParsed(args, context.mcpReq._meta)) }));
   server.registerTool('get_dashboard_view', {
     title: '读取面板数据', description: '面板内部查询。', inputSchema: querySchema, annotations: annotation,
     _meta: { ui: { visibility: ['app'] } },
-  }, async (args, context) => panelResult(await getService().query(args, context.mcpReq._meta)));
+  }, async (args, context) => panelResult(await getService().queryParsed(args, context.mcpReq._meta)));
   server.registerTool('inspect_thread_binding', {
     title: '检查会话关联', description: '检查宿主传入的会话标识和上下文字段，不读取凭据。',
     inputSchema: z.object({}), annotations: annotation,

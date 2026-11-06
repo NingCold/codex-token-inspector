@@ -19,14 +19,14 @@ export async function connect(onInitial: (d: Dashboard) => void, onCompact: (com
     const threadId = sessionStorage.getItem('cti:thread') ?? undefined;
     history.replaceState(null, '', location.pathname);
     return { query: async input => {
-      const scoped = { ...input, view: input.view ?? (threadId ? 'current' : 'all'), ...(input.view !== 'all' && threadId ? { sessionId: threadId } : {}) };
+      const scoped = { ...input, compactSessions: true, view: input.view ?? (threadId ? 'current' : 'all'), ...(input.view !== 'all' && threadId ? { sessionId: threadId } : {}) };
       const res = await fetch('/api/dashboard', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` }, body: JSON.stringify(scoped) });
       if (!res.ok) throw new Error(`查询失败（${res.status}），请通过启动器重新打开。`);
       return dashboard(await res.json());
     }, close() {} };
   }
   // Fullscreen height belongs to the host; resize notifications can feed back into history rows.
-  const app = new App({ name: 'Codex Token Inspector', version: '0.2.7' }, { availableDisplayModes: ['fullscreen'] }, { autoResize: false });
+  const app = new App({ name: 'Codex Token Inspector', version: '0.2.8' }, { availableDisplayModes: ['fullscreen'] }, { autoResize: false });
   let initialSeen = false;
   let initialReady: () => void;
   const firstResult = new Promise<void>(resolve => { initialReady = resolve; });
@@ -50,7 +50,7 @@ export async function connect(onInitial: (d: Dashboard) => void, onCompact: (com
   await Promise.race([firstResult, new Promise<void>(resolve => { resultTimer = setTimeout(resolve, 500); })]);
   clearTimeout(resultTimer!);
   return { query: async input => {
-    const result = await app.callServerTool({ name: 'get_dashboard_view', arguments: input });
+    const result = await app.callServerTool({ name: 'get_dashboard_view', arguments: { ...input, compactSessions: true } });
     if (result.isError) throw new Error('插件查询失败');
     return dashboard(result._meta?.dashboard ?? result.structuredContent);
   }, close: () => { void app.close(); }, openPanel: async () => { await app.requestDisplayMode({ mode: 'fullscreen' }); } };

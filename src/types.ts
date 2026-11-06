@@ -29,12 +29,14 @@ export interface IndexStatus {
 }
 export interface IndexSnapshot { threads: ThreadInfo[]; sources: SourceRow[]; requests: IndexedRequest[]; status: IndexStatus }
 
-export function zeroUsage(): Usage { return { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 }; }
-export function totalUsage(rows: Usage[], requests = rows.length): Totals {
-  const result = zeroUsage();
-  for (const row of rows) {
-    result.input += row.input; result.output += row.output; result.total += row.total;
-    for (const key of ['cached', 'cacheWrite', 'reasoning'] as const) result[key] = result[key] === null || row[key] === null ? null : result[key]! + row[key]!;
-  }
-  return { ...result, requests, cacheRate: result.input && result.cached !== null ? result.cached / result.input : null };
+export function emptyTotals(): Totals { return { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0, requests: 0, cacheRate: null }; }
+export function addUsage(sum: Totals, row: Usage, requests: number) {
+  sum.input += row.input; sum.output += row.output; sum.total += row.total; sum.requests += requests;
+  for (const key of ['cached', 'cacheWrite', 'reasoning'] as const) sum[key] = sum[key] === null || row[key] === null ? null : sum[key]! + row[key]!;
+  sum.cacheRate = sum.input && sum.cached !== null ? sum.cached / sum.input : null;
+}
+export function sumTotals(rows: Iterable<Totals>): Totals {
+  const sum = emptyTotals();
+  for (const row of rows) addUsage(sum, row, row.requests);
+  return sum;
 }

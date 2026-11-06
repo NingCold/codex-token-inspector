@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import type { ParseState, RequestUsage, ThreadInfo, Usage } from './types.js';
 
-export const parserVersion = 2;
+export const parserVersion = 3;
 export const emptyState = (): ParseState => ({ ownerId: null, metadata: null, contexts: {}, usageCount: 0, malformed: 0, invalidUsage: 0, totalMismatches: 0, legacySafe: true, lastSnapshot: null, snapshots: {} });
 const token = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const text = (value: unknown): string | null => typeof value === 'string' && value.length ? value : null;
@@ -72,15 +72,19 @@ export async function scanLog(path: string, start: number, end: number, previous
       const piece = buffer.subarray(cursor, newline < 0 ? buffer.length : newline);
       if (!skip) {
         parts.push(piece); length += piece.length;
-        const header = parts[0].toString('utf8', 0, Math.min(parts[0].length, 220));
-        const type = /"type"\s*:\s*"([^"]+)"/.exec(header)?.[1];
-        if (type && !['session_meta', 'turn_context', 'token_usage_record', 'event_msg'].includes(type)) { skip = true; parts = []; }
-        else if (type === 'event_msg' && header.includes('"payload"') && /"payload"\s*:\s*\{\s*"type"\s*:\s*"(?!token_count")/.test(header)) { skip = true; parts = []; }
-        else if (length > 32 * 1024 * 1024) { skip = true; parts = []; state.malformed++; }
+        if (length - piece.length < 220) {
+          const head = parts.length === 1 ? piece.subarray(0, 220) : Buffer.concat(parts, Math.min(length, 220));
+          // Only fast-skip complete types in a known header layout; otherwise parse the whole line.
+          const [, type, event] = /^\s*\{\s*(?:"timestamp"\s*:\s*"[^"\\]*"\s*,\s*)?"type"\s*:\s*"([a-z_]+)"(?:\s*,\s*"payload"\s*:\s*\{\s*"type"\s*:\s*"([a-z_]+)")?/.exec(head.toString('utf8')) ?? [];
+          skip = !!type && (!['session_meta', 'turn_context', 'token_usage_record', 'event_msg'].includes(type)
+            || (type === 'event_msg' && !!event && event !== 'token_count'));
+        }
+        if (!skip && length > 32 * 1024 * 1024) { skip = true; state.malformed++; }
+        if (skip) parts = [];
       }
       if (newline < 0) { offset += buffer.length - cursor; break; }
       offset += piece.length + 1;
-      if (!skip) consume(Buffer.concat(parts, length), committed);
+      if (!skip) consume(parts.length === 1 ? piece : Buffer.concat(parts, length), committed);
       committed = offset; parts = []; length = 0; skip = false; cursor = newline + 1;
     }
   }
