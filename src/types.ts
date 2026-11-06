@@ -15,15 +15,18 @@ export interface ParseState {
   ownerId: string | null; metadata: ThreadInfo | null;
   contexts: Record<string, { model: string | null; effort: string | null; modelAmbiguous?: boolean }>;
   usageCount: number; malformed: number; invalidUsage: number; totalMismatches: number; legacySafe: boolean;
+  invalidThreads?: (string | null)[];
   lastSnapshot: Usage | null; snapshots: Record<string, Usage>;
 }
 export interface SourceRow {
+  evidenceMtime?: number; evidenceOffset?: number;
   parserVersion?: number;
   path: string; owner: string | null; offset: number; size: number; mtime: number;
   identity: string; anchor: string; state: ParseState; available: boolean; error: string | null;
 }
 export interface IndexedRequest extends RequestUsage { path: string; owner: string | null }
 export interface IndexStatus {
+  refreshPending?: boolean;
   running: boolean; completedFiles: number; totalFiles: number;
   lastIndexedAt: string | null; error: string | null; sourceWarnings: string[];
 }

@@ -24,7 +24,7 @@ npm run typecheck
 npm test
 ```
 
-集成测试会启动刚构建的服务。为统计或解析逻辑添加测试时，用 `tests/fixtures.ts` 生成合成会话日志，并让索引写入独立测试目录。
+集成测试会启动刚构建的服务。用 `await using data = await fixture()` 创建合成日志和独立索引；测试退出后会清理自己的临时目录。排查失败时，可在重跑前设置 `CTI_KEEP_TEST_FILES=1`，终端会打印保留的目录位置。
 
 修改面板后，再运行界面测试。首次运行需安装 Playwright 使用的 Chromium：
 

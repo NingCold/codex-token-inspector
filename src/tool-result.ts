@@ -12,7 +12,7 @@ export function usageSummary(data: Dashboard) {
       models: selected.models.slice(0, 12), agents: selected.agents.slice(0, 12),
       omittedModels: Math.max(0, selected.models.length - 12), omittedAgents: Math.max(0, selected.agents.length - 12) } : null,
     ...(data.scope.view === 'all' ? { sessions: data.sessions.slice(0, 20), omittedSessions: Math.max(0, data.sessions.length - 20) } : {}),
-    index: { running: data.index.running, error: data.index.error, sourceWarnings: data.index.sourceWarnings },
+    index: { running: data.index.running, ...(data.index.refreshPending && { refreshPending: true }), error: data.index.error, sourceWarnings: data.index.sourceWarnings },
   };
 }
 

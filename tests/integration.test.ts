@@ -10,7 +10,7 @@ import { fixture, ids } from './fixtures.js';
 import { UsageService } from '../src/service.js';
 
 test('bundled MCP server exposes global/thread apps and handles live tool calls', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   const client = new Client({ name: 'token-inspector-p0-check', version: '1.0.0' });
   const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('plugin/dist/server.mjs')], env: { ...process.env as Record<string, string>, CODEX_HOME: data.codexHome, CTI_DATA_DIR: data.dataDir }, stderr: 'pipe' });
   await client.connect(transport);
@@ -51,7 +51,8 @@ test('bundled MCP server exposes global/thread apps and handles live tool calls'
 });
 
 test('local fallback enforces host/origin/token, validates input, and preserves incomplete data state', async () => {
-  const fixtureData = await fixture(), service = new UsageService(fixtureData);
+  await using fixtureData = await fixture();
+  const service = new UsageService(fixtureData);
   const html = await readFile('plugin/dist/dashboard.html', 'utf8');
   const web = await startLocalWeb(html, 0, input => service.queryParsed(input, undefined, true));
   const token = new URLSearchParams(new URL(web.url).hash.slice(1)).get('access_token')!;

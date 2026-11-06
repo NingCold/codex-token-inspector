@@ -81,6 +81,7 @@ h1 { font-size: 20px; font-weight: 600; letter-spacing: -.4px; }
 .session .warning-badge { margin-top: 4px; }
 .more-sessions { align-self: center; background: transparent; }
 .detail { min-width: 0; padding: 28px 30px 32px; }
+.index-notice { margin-bottom: 12px; color: var(--muted); font-size: 12px; }
 .current-view .detail { max-width: 1200px; width: 100%; margin: 0 auto; }
 .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .detail-header > div { min-width: 0; }

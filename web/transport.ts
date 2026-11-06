@@ -26,7 +26,7 @@ export async function connect(onInitial: (d: Dashboard) => void, onCompact: (com
     }, close() {} };
   }
   // Fullscreen height belongs to the host; resize notifications can feed back into history rows.
-  const app = new App({ name: 'Codex Token Inspector', version: '0.2.8' }, { availableDisplayModes: ['fullscreen'] }, { autoResize: false });
+  const app = new App({ name: 'Codex Token Inspector', version: '0.2.9' }, { availableDisplayModes: ['fullscreen'] }, { autoResize: false });
   let initialSeen = false;
   let initialReady: () => void;
   const firstResult = new Promise<void>(resolve => { initialReady = resolve; });

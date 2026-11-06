@@ -11,14 +11,14 @@ import { getService, closeService } from './service.js';
 import { panelResult, usageSummary } from './tool-result.js';
 
 const html = await readFile(new URL('./dashboard.html', import.meta.url), 'utf8');
-const URI = 'ui://codex-token-inspector/dashboard-v12.html';
+const URI = 'ui://codex-token-inspector/dashboard-v13.html';
 const annotation = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true };
 let local: Awaited<ReturnType<typeof startLocalWeb>> | undefined;
 let localStarting: Promise<Awaited<ReturnType<typeof startLocalWeb>>> | undefined;
 async function getLocalWeb() { return local ??= await (localStarting ??= startLocalWeb(html)); }
 
 function createServer() {
-  const server = new McpServer({ name: 'codex-token-inspector', version: '0.2.8' });
+  const server = new McpServer({ name: 'codex-token-inspector', version: '0.2.9' });
   registerAppResource(server, 'Token 用量面板', URI, { description: '本机真实 Token 用量、模型与子代理统计。' }, async () => ({ contents: [{
     uri: URI, mimeType: RESOURCE_MIME_TYPE, text: html,
     _meta: { ui: { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [] } },

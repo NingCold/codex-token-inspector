@@ -9,7 +9,8 @@ import { getDashboard } from '../src/dashboard.js';
 import { fixture, ids, line, request, context } from './fixtures.js';
 
 test('request ownership, inherited duplicate history, mixed models and nested agents reconcile', async () => {
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     const all = await service.query({}, { threadId: ids.main }, true);
     assert.equal(all.selected?.totals.total, 6200000);
@@ -33,7 +34,7 @@ test('request ownership, inherited duplicate history, mixed models and nested ag
 });
 
 test('an aliased Codex home indexes its logs but does not follow nested links outside it', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   const alias = join(data.root, 'home-alias'), external = join(data.root, 'external');
   await symlink(data.codexHome, alias, 'junction');
   await mkdir(external);
@@ -48,7 +49,8 @@ test('an aliased Codex home indexes its logs but does not follow nested links ou
 });
 
 test('incremental byte offsets handle partial UTF-8 records, append, truncation and file moves', async () => {
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     await service.query({}, { threadId: ids.main }, true);
     const extra = Buffer.from(context('新轮次', 'new-model') + request(ids.main, 'new-request', '新轮次', 100, 80, 20));
@@ -73,7 +75,8 @@ test('incremental byte offsets handle partial UTF-8 records, append, truncation 
 });
 
 test('two index clients share committed data without double import; model context persists across reopen', async () => {
-  const data = await fixture(), first = new UsageIndex(data), second = new UsageIndex(data);
+  await using data = await fixture();
+  const first = new UsageIndex(data), second = new UsageIndex(data);
   try {
     await Promise.all([first.refresh(ids.main, true), second.refresh(ids.main, true)]);
     assert.equal(getDashboard(second.snapshot(), {}, { threadId: ids.main, source: 'host' }).selected?.totals.total, 6200000);
@@ -85,7 +88,8 @@ test('two index clients share committed data without double import; model contex
 });
 
 test('conflicting responses are excluded and unknown cache data is never presented as zero', async () => {
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     await appendFile(data.files.main, request(ids.main, 'r-main-b', 'turn-b', 900000, 500000, 40));
     await appendFile(data.files.main, request(ids.main, 'unknown-cache', 'turn-b', 100, undefined, 10));
@@ -100,7 +104,8 @@ test('current-chat binding uses each request, rejects conflicting IDs, and never
   assert.deepEqual(resolveBinding({ threadId: ids.main, 'x-codex-turn-metadata': { thread_id: ids.main } }), { threadId: ids.main, source: 'host' });
   assert.equal(resolveBinding({ threadId: ids.main, 'x-codex-turn-metadata': { thread_id: ids.import } }).source, 'conflict');
   assert.equal(resolveBinding({ sessionId: ids.main }).threadId, null);
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     assert.equal((await service.query({}, { threadId: ids.main }, true)).selected?.id, ids.main);
     assert.equal((await service.query({}, { threadId: ids.import })).selected?.id, ids.import);

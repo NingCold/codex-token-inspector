@@ -25,14 +25,14 @@ async function checkSessionRows(page) {
   }
   if (await page.locator('.session-row').evaluateAll(nodes => nodes.some(n => n.scrollWidth > n.clientWidth))) throw new Error('Long session titles or project names must not displace Token values');
 }
-const source = await fixture();
+await using source = await fixture();
 const fixtureDb = new DatabaseSync(resolve(source.codexHome, 'state_5.sqlite'));
 try { fixtureDb.prepare('UPDATE threads SET name=?,title=?,cwd=? WHERE id=?').run('用于核验窄面板显示的超长会话标题与项目名称', '用于核验窄面板显示的超长会话标题与项目名称', 'D:/fixtures/project-with-a-long-name', ids.legacy); }
 finally { fixtureDb.close(); }
 await appendFile(source.files.import, request(ids.import, 'billion-request', 'missing-model-context', 1750000000, 1700000000, 1000000));
-const runDir = resolve('.cache', `ui-check-${Date.now()}`);
-await mkdir(runDir, { recursive: true });
+const runDir = source.root;
 const child = spawn(process.execPath, [resolve('plugin/dist/server.mjs'), '--web'], { cwd: runDir, windowsHide: true, stdio: 'ignore', env: { ...process.env, CODEX_HOME: source.codexHome, CTI_DATA_DIR: source.dataDir } });
+const exited = new Promise(resolve => child.once('close', resolve));
 let browser;
 try {
   let state;
@@ -109,4 +109,6 @@ try {
   await checkEmbeddedUi(browser, errors, capture);
   if (errors.length) throw new Error(errors.join('\n'));
   console.log('UI checks passed: compact rows/cards, child toggle placement, scope, models, refresh, search, and three viewport sizes');
-} finally { await browser?.close(); child.kill(); }
+} finally {
+  try { await browser?.close(); } finally { child.kill(); await exited; }
+}

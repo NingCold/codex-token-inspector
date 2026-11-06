@@ -6,8 +6,44 @@ import { DatabaseSync } from 'node:sqlite';
 import { UsageService } from '../src/service.js';
 import { fixture, ids, line, context, request } from './fixtures.js';
 
+test('rejected requests are unknown, valid zero is known, and partial totals remain additive', async () => {
+  await using data = await fixture();
+  const service = new UsageService(data);
+  const meta = line('session_meta', { id: ids.docs });
+  const check = async (body: string, total: number | null) => {
+    await writeFile(data.files.docs, meta + body);
+    const child = (await service.query({}, { threadId: ids.docs }, true)).selected!;
+    assert.equal(child.totals.total, total);
+    assert.equal(child.agents[0].total, total);
+    const all = await service.query({ view: 'all', compactSessions: true, sessionId: ids.main }, undefined, true);
+    assert.equal(all.selected!.totals.unknownAgents, Number(total === null));
+    assert.equal(all.sessions.find(s => s.id === ids.main)!.total, 5580000 + (total ?? 0));
+    return child;
+  };
+  try {
+    const invalid = line('token_usage_record', { thread_id: ids.docs, usage: { input_tokens: 100 } });
+    await check(invalid, null);
+    await check(request(ids.docs, 'a', 't', 100, 0, 10) + request(ids.docs, 'a', 't', 200, 0, 10), null);
+    assert.equal((await check(request(ids.docs, 'zero', 't', 0, 0, 0), 0)).totals.requests, 1);
+    assert.equal((await check(invalid + request(ids.docs, 'good', 't', 100, 0, 10), 110)).totals.requests, 1);
+    // A fork can contain another thread's rejected request. Rebuild its old
+    // un-attributed diagnostic, without charging the otherwise empty fork.
+    await writeFile(data.files.docs, meta);
+    await writeFile(data.files.fork, line('session_meta', { id: ids.fork, forked_from_id: ids.main }) + invalid);
+    await service.index.refresh(undefined, true);
+    const db = new DatabaseSync(join(data.dataDir, 'usage-v1.sqlite'));
+    try { db.prepare("UPDATE sources SET data=json_remove(data,'$.state.invalidThreads') WHERE path=?").run(data.files.fork); }
+    finally { db.close(); }
+    const owner = (await service.query({}, { threadId: ids.docs }, true)).selected!;
+    assert.equal(owner.totals.total, null);
+    const list = await service.query({ view: 'all', compactSessions: true });
+    assert.equal(list.sessions.find(s => s.id === ids.fork)?.total, 0);
+  } finally { await service.close(); }
+});
+
 test('a token_count split across read blocks is recovered even from an older index', async () => {
-  const data = await fixture(), meta = line('session_meta', { id: ids.legacy });
+  await using data = await fixture();
+  const meta = line('session_meta', { id: ids.legacy });
   const snapshot = line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 500, output_tokens: 50 } } });
   const pad = 256 * 1024 - Buffer.byteLength(meta + line('message', '')) - snapshot.indexOf('token_count') - 3;
   await writeFile(data.files.legacy, meta + line('message', 'x'.repeat(pad)) + snapshot);
@@ -24,7 +60,7 @@ test('a token_count split across read blocks is recovered even from an older ind
 });
 
 test('late model context backfills exact turns across scans without guessing ambiguous models', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   let service = new UsageService(data);
   const query = async () => (await service.query({ includeChildren: false }, { threadId: ids.import }, true)).selected!;
   try {
@@ -52,7 +88,7 @@ test('late model context backfills exact turns across scans without guessing amb
 });
 
 test('log relationships supplement incomplete catalogs across refreshes and index reopen', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   let service = new UsageService(data);
   try {
     await service.query({}, { threadId: ids.main }, true);
@@ -75,7 +111,7 @@ test('log relationships supplement incomplete catalogs across refreshes and inde
 });
 
 test('catalog parent relationships and guardian exclusions survive log supplementation', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   const db = new DatabaseSync(join(data.codexHome, 'state_5.sqlite'));
   try {
     db.prepare('UPDATE thread_spawn_edges SET parent_thread_id=? WHERE child_thread_id=?').run(ids.import, ids.code);
@@ -96,7 +132,7 @@ test('catalog parent relationships and guardian exclusions survive log supplemen
 });
 
 test('unsafe legacy snapshots report unknown usage while known scopes remain additive', async () => {
-  const data = await fixture();
+  await using data = await fixture();
   await writeFile(data.files.fork, line('session_meta', { id: ids.fork, forked_from_id: ids.main,
     source: { subagent: { thread_spawn: { parent_thread_id: ids.main } } } })
     + line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 500, output_tokens: 50 } } }));
@@ -133,7 +169,8 @@ test('unsafe legacy snapshots report unknown usage while known scopes remain add
 });
 
 test('non-object JSON lines are skipped without losing earlier or later requests', async () => {
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     await service.query({}, { threadId: ids.main }, true);
     await appendFile(data.files.tests, 'null\n42\ntrue\n"text"\n[]\n'
@@ -153,7 +190,8 @@ test('non-object JSON lines are skipped without losing earlier or later requests
 });
 
 test('archiving clears stale path warnings without hiding a different missing file', async () => {
-  const data = await fixture(), service = new UsageService(data);
+  await using data = await fixture();
+  const service = new UsageService(data);
   try {
     await service.query({}, { threadId: ids.main }, true);
     const archive = join(data.codexHome, 'archived_sessions');

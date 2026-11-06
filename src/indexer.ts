@@ -3,11 +3,14 @@ import { mkdirSync } from 'node:fs';
 import { readdir, lstat, open, realpath } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { emptyState, metadata, parserVersion, scanLog } from './parser.js';
 import type { IndexSnapshot, IndexStatus, IndexedRequest, SourceRow, ThreadInfo } from './types.js';
 
 export interface IndexOptions { codexHome?: string; dataDir?: string }
+const leaseMs = 120_000;
+class LeaseLost extends Error { constructor() { super('索引写入任务已交接，请刷新重试'); } }
 export class UsageIndex {
   readonly codexHome: string;
   readonly dataDir: string;
@@ -15,6 +18,7 @@ export class UsageIndex {
   private owner = randomUUID();
   private job: Promise<void> | null = null;
   private lastRefresh = 0;
+  private nextRenewal = 0;
   private stopped = false;
   constructor(options: IndexOptions = {}) {
     this.codexHome = resolve(options.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'));
@@ -29,8 +33,11 @@ export class UsageIndex {
       INSERT OR IGNORE INTO lease VALUES(1, NULL, 0);
       CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sources (path TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS cursors (path TEXT PRIMARY KEY REFERENCES sources(path) ON DELETE CASCADE, data TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS clear_source_cursor AFTER UPDATE OF data ON sources
+        BEGIN DELETE FROM cursors WHERE path=NEW.path; END;
       CREATE TABLE IF NOT EXISTS requests (path TEXT NOT NULL, offset INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(path, offset));`);
-    // Every request batch commits its source checkpoint in the same transaction.
+    // Every request batch commits its source evidence in the same transaction.
     // Track these writes and catalog changes across connections, not lease or status updates.
     for (const table of ['threads', 'sources']) {
       const bump = "UPDATE settings SET value=value+1 WHERE key='dataRevision';";
@@ -42,14 +49,27 @@ export class UsageIndex {
   }
   private set(key: string, value: unknown) { this.db.prepare('INSERT INTO settings VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
   private get<T>(key: string, fallback: T): T { const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key); return row ? JSON.parse(String(row.value)) : fallback; }
-  private transaction(work: () => void) { this.db.exec('BEGIN IMMEDIATE'); try { work(); this.db.exec('COMMIT'); } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
+  private transaction(work: () => void) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (!this.db.prepare('SELECT 1 FROM lease WHERE id=1 AND owner=?').get(this.owner)) throw new LeaseLost();
+      this.renewIfDue();
+      work();
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+  }
   generation() { return this.get('dataRevision', 0); }
   private claim() {
     const now = Date.now();
-    return Number(this.db.prepare('UPDATE lease SET owner=?, until_ms=? WHERE id=1 AND (until_ms < ? OR owner=?)').run(this.owner, now + 120000, now, this.owner).changes) === 1;
+    const claimed = Number(this.db.prepare('UPDATE lease SET owner=?, until_ms=? WHERE id=1 AND (until_ms <= ? OR owner=?)').run(this.owner, now + leaseMs, now, this.owner).changes) === 1;
+    if (claimed) this.nextRenewal = now + leaseMs / 4;
+    return claimed;
   }
-  private renew() {
-    if (Number(this.db.prepare('UPDATE lease SET until_ms=? WHERE id=1 AND owner=?').run(Date.now() + 120000, this.owner).changes) !== 1) throw new Error('索引写入任务已交接，请刷新重试');
+  private renewIfDue() {
+    const now = Date.now();
+    if (now < this.nextRenewal) return;
+    if (!Number(this.db.prepare('UPDATE lease SET until_ms=? WHERE id=1 AND owner=?').run(now + leaseMs, this.owner).changes)) throw new LeaseLost();
+    this.nextRenewal = now + leaseMs / 4;
   }
   private statusUpdate(patch: Partial<IndexStatus>) { this.set('status', { ...this.status(), ...patch }); }
   status(): IndexStatus {
@@ -57,21 +77,39 @@ export class UsageIndex {
     const lease = this.db.prepare('SELECT owner,until_ms FROM lease WHERE id=1').get()!;
     return { ...status, running: Boolean(lease.owner && Number(lease.until_ms) >= Date.now()) };
   }
-  async refresh(priorityId?: string, wait = false) {
+  async refresh(priorityId?: string, wait = false, waitMs = Infinity): Promise<void | 'pending'> {
+    const deadline = performance.now() + waitMs;
     if (!this.job && (wait || Date.now() - this.lastRefresh > 1500)) {
       if (this.claim()) {
         this.lastRefresh = Date.now();
-        this.job = this.run(priorityId).catch(e => this.statusUpdate({ error: e instanceof Error ? e.message : String(e) })).finally(() => {
+        this.job = this.run(priorityId).catch(e => {
+          if (e instanceof LeaseLost) throw e;
+          this.transaction(() => this.statusUpdate({ error: e instanceof Error ? e.message : String(e) }));
+        }).finally(() => {
           this.db.prepare('UPDATE lease SET owner=NULL,until_ms=0 WHERE id=1 AND owner=?').run(this.owner);
           this.job = null;
         });
       }
     }
-    if (wait && this.job) await this.job;
-    else if (this.job) {
+    if (this.job) {
       let timeout: ReturnType<typeof setTimeout>;
-      await Promise.race([this.job, new Promise<void>(r => { timeout = setTimeout(r, 700); })]);
-      clearTimeout(timeout!);
+      try {
+        if (wait && !Number.isFinite(waitMs)) return await this.job;
+        return await Promise.race([this.job, new Promise<void | 'pending'>(r => {
+          timeout = setTimeout(() => r(wait ? 'pending' : undefined), wait ? Math.max(0, deadline - performance.now()) : 700);
+        })]);
+      } catch (e) {
+        if (!(e instanceof LeaseLost)) throw e;
+      } finally { clearTimeout(timeout!); }
+    }
+    // On contention or handoff, only an explicit refresh waits for the shared writer.
+    while (wait && !this.stopped) {
+      const lease = this.db.prepare('SELECT owner,until_ms FROM lease WHERE id=1').get()!;
+      if (!lease.owner) return;
+      const left = deadline - performance.now();
+      if (left <= 0) return 'pending';
+      if (Number(lease.until_ms) <= Date.now()) return this.refresh(priorityId, true, left);
+      await new Promise(r => setTimeout(r, Math.min(100, left)));
     }
   }
   private async catalog(): Promise<{ threads: ThreadInfo[]; warnings: string[] }> {
@@ -132,8 +170,14 @@ export class UsageIndex {
       return hash.digest('hex');
     } finally { await file.close(); }
   }
+  // Most files need no overlay. An ordinary message advances the physical cursor,
+  // not the timestamp or extent of the evidence used to choose snapshots and match moves.
+  private readSource(row: Record<string, unknown>): SourceRow {
+    const source = JSON.parse(String(row.data)) as SourceRow;
+    return row.cursor ? { ...source, evidenceMtime: source.evidenceMtime ?? source.mtime, evidenceOffset: source.evidenceOffset ?? source.offset, ...JSON.parse(String(row.cursor)) } : source;
+  }
   private async run(priorityId?: string) {
-    this.statusUpdate({ error: null, completedFiles: 0 });
+    this.transaction(() => this.statusUpdate({ error: null, completedFiles: 0 }));
     const catalog = await this.catalog();
     const files = await this.logFiles();
     // Compare like paths: the configured home can contain a Windows short name or a junction.
@@ -149,14 +193,13 @@ export class UsageIndex {
     const priorityFiles = new Set(files.filter(path => ids.some(id => path.includes(id))));
     files.sort((a, b) => Number(priorityFiles.has(b)) - Number(priorityFiles.has(a)) || b.localeCompare(a));
     const discovered = new Set(files);
+    const sourceAt = this.db.prepare('SELECT s.data,c.data AS cursor FROM sources s LEFT JOIN cursors c USING(path) WHERE s.path=?');
     this.transaction(() => {
-      this.renew();
       const upsert = this.db.prepare('INSERT INTO threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE threads.data <> excluded.data');
       for (const t of catalog.threads) upsert.run(t.id, JSON.stringify(t));
       for (const { path } of this.db.prepare('SELECT path FROM sources').all()) {
         if (discovered.has(String(path))) continue;
-        const row = this.db.prepare('SELECT data FROM sources WHERE path=?').get(path)!;
-        const source = JSON.parse(String(row.data)) as SourceRow;
+        const source = this.readSource(sourceAt.get(path)!);
         if (source.available || source.error !== '日志文件未找到') { source.available = false; source.error = '日志文件未找到'; this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(source), source.path); }
       }
       this.statusUpdate({ totalFiles: files.length, sourceWarnings: catalog.warnings });
@@ -164,27 +207,32 @@ export class UsageIndex {
     let completed = 0;
     for (const path of files) {
       if (this.stopped) break;
-      this.renew();
-      const saved = this.db.prepare('SELECT data FROM sources WHERE path=?').get(path);
-      const previous = saved ? JSON.parse(String(saved.data)) as SourceRow : null;
+      this.renewIfDue();
+      const saved = sourceAt.get(path);
+      const previous = saved ? this.readSource(saved) : null;
       try {
         const resolved = await realpath(path), allowed = relative(logRoot, resolved);
         if (allowed.startsWith('..') || isAbsolute(allowed)) throw new Error('日志路径超出数据目录');
         const before = await lstat(path);
         if (!before.isFile() || before.isSymbolicLink()) throw new Error('跳过非普通日志文件');
         const identity = `${before.dev}:${before.ino}:${before.birthtimeMs}`;
-        if (previous?.parserVersion === parserVersion && previous.identity === identity && previous.size === before.size && previous.mtime === before.mtimeMs && previous.available && !previous.error) { completed++; continue; }
-        let append = Boolean(previous?.parserVersion === parserVersion && previous.identity === identity && before.size >= previous.offset);
+        const compatible = previous?.parserVersion === parserVersion && previous.identity === identity && !(previous.state.invalidUsage && !previous.state.invalidThreads);
+        if (compatible && previous.size === before.size && previous.mtime === before.mtimeMs && previous.available && !previous.error) { completed++; continue; }
+        let append = Boolean(compatible && before.size >= previous.offset);
         if (append && previous) append = previous.anchor === await this.fingerprint(path, previous.offset);
         if (append && previous && before.size === previous.offset && before.mtimeMs === previous.mtime && previous.available && !previous.error) { completed++; continue; }
         if (append && previous && before.size === previous.size && before.mtimeMs !== previous.mtime) append = false;
-        const parsed = await scanLog(path, append ? previous!.offset : 0, before.size, append ? previous!.state : emptyState());
+        const parsed = await scanLog(path, append ? previous!.offset : 0, before.size, append ? previous!.state : emptyState(), () => this.renewIfDue());
         const after = await lstat(path);
         if (after.ino !== before.ino || after.birthtimeMs !== before.birthtimeMs || after.size < before.size || (after.size === before.size && after.mtimeMs !== before.mtimeMs)) throw new Error('日志在读取时被替换，将于下次刷新重新读取');
-        const source: SourceRow = { parserVersion, path, owner: parsed.state.ownerId, offset: parsed.offset, size: before.size, mtime: before.mtimeMs,
-          identity, anchor: await this.fingerprint(path, parsed.offset), state: parsed.state, available: true, error: null };
+        const cursor = { offset: parsed.offset, size: before.size, mtime: before.mtimeMs, anchor: await this.fingerprint(path, parsed.offset) };
         this.transaction(() => {
-          this.renew();
+          if (append && previous?.available && !previous.error && !parsed.records.length && isDeepStrictEqual(parsed.state, previous.state)) {
+            this.db.prepare('INSERT OR REPLACE INTO cursors VALUES(?,?)').run(path, JSON.stringify(cursor));
+            completed++;
+            return;
+          }
+          const source: SourceRow = { parserVersion, path, owner: parsed.state.ownerId, ...cursor, identity, state: parsed.state, available: true, error: null };
           if (!append) this.db.prepare('DELETE FROM requests WHERE path=?').run(path);
           const insert = this.db.prepare('INSERT OR REPLACE INTO requests VALUES(?,?,?)');
           for (const record of parsed.records) insert.run(path, record.offset, JSON.stringify(record));
@@ -193,18 +241,19 @@ export class UsageIndex {
           this.statusUpdate({ completedFiles: ++completed, lastIndexedAt: new Date().toISOString() });
         });
       } catch (e) {
-        if (previous) { previous.available = false; previous.error = e instanceof Error ? e.message : String(e); this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(previous), path); }
+        if (e instanceof LeaseLost) throw e;
+        if (previous) this.transaction(() => { previous.available = false; previous.error = e instanceof Error ? e.message : String(e); this.db.prepare('UPDATE sources SET data=? WHERE path=?').run(JSON.stringify(previous), path); });
         else catalog.warnings.push(`无法索引日志：${path.split(/[\\/]/).pop()}`);
         completed++;
       }
     }
-    this.statusUpdate({ completedFiles: completed, lastIndexedAt: new Date().toISOString(), sourceWarnings: catalog.warnings });
+    this.transaction(() => this.statusUpdate({ completedFiles: completed, lastIndexedAt: new Date().toISOString(), sourceWarnings: catalog.warnings }));
   }
   snapshot(): IndexSnapshot {
     // A read transaction keeps source availability and request rows from the same committed generation.
     this.db.exec('BEGIN');
     try {
-      const sources = this.db.prepare('SELECT data FROM sources').all().map(r => JSON.parse(String(r.data)) as SourceRow);
+      const sources = this.db.prepare('SELECT s.data,c.data AS cursor FROM sources s LEFT JOIN cursors c USING(path)').all().map(r => this.readSource(r));
       const byPath = new Map(sources.filter(s => s.available).map(s => [s.path, s]));
       const requests: IndexedRequest[] = [];
       for (const row of this.db.prepare('SELECT path,data FROM requests').all()) {
@@ -224,7 +273,7 @@ export class UsageIndex {
       }));
       // Merge on every snapshot: unchanged logs may not be scanned again after a catalog refresh.
       // Catalog relationships remain authoritative; cached log metadata fills missing fields.
-      for (const source of [...sources].sort((a, b) => Number(b.available) - Number(a.available) || b.mtime - a.mtime)) {
+      for (const source of [...sources].sort((a, b) => Number(b.available) - Number(a.available) || (b.evidenceMtime ?? b.mtime) - (a.evidenceMtime ?? a.mtime))) {
         const log = source.state.metadata;
         if (!log) continue;
         const thread = threads.get(log.id);
@@ -242,5 +291,9 @@ export class UsageIndex {
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
-  async close() { this.stopped = true; await this.job; this.db.close(); }
+  async close() {
+    this.stopped = true;
+    try { await this.job; } catch (e) { if (!(e instanceof LeaseLost)) throw e; }
+    finally { this.db.close(); }
+  }
 }

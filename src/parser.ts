@@ -27,7 +27,7 @@ export function metadata(value: any): ThreadInfo | null {
 
 // Offsets are bytes, not JS character indices. Only complete newline-terminated records commit.
 // Unrelated large tool/message lines are discarded after their header; no message bodies are indexed.
-export async function scanLog(path: string, start: number, end: number, previous = emptyState()) {
+export async function scanLog(path: string, start: number, end: number, previous = emptyState(), heartbeat?: () => void) {
   const state: ParseState = structuredClone(previous);
   const records: RequestUsage[] = [];
   let offset = start, committed = start, parts: Buffer[] = [], length = 0, skip = false;
@@ -51,7 +51,12 @@ export async function scanLog(path: string, start: number, end: number, previous
     } else if (row.type === 'token_usage_record') {
       state.usageCount++;
       const usage = parseUsage(value.usage);
-      if (!usage || !text(value.thread_id)) { state.invalidUsage++; return; }
+      if (!usage || !text(value.thread_id)) {
+        state.invalidUsage++;
+        const thread = text(value.thread_id), rejected = state.invalidThreads ??= [];
+        if (!rejected.includes(thread)) rejected.push(thread);
+        return;
+      }
       if (token(value.usage.total_tokens) !== null && value.usage.total_tokens !== usage.total) state.totalMismatches++;
       const context = state.contexts[value.turn_id];
       records.push({ ...usage, threadId: value.thread_id, responseId: text(value.response_id), turnId: text(value.turn_id),
@@ -65,6 +70,7 @@ export async function scanLog(path: string, start: number, end: number, previous
   }
   const stream = createReadStream(path, { start, end: end - 1, highWaterMark: 256 * 1024 });
   for await (const chunk of stream) {
+    heartbeat?.();
     const buffer = chunk as Buffer;
     let cursor = 0;
     while (cursor < buffer.length) {

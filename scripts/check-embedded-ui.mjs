@@ -8,11 +8,11 @@ import { panelResult } from '../src/tool-result.ts';
 
 // Exercise the actual bundled iframe and MCP Apps transport with a controlled host.
 export async function checkEmbeddedUi(browser, errors, capture) {
-  const source = await fixture();
+  await using source = await fixture();
   await writeFile(source.files.fork, line('session_meta', { id: ids.fork, forked_from_id: ids.main })
     + line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 500, output_tokens: 50 } } }));
-  const service = new UsageService(source);
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const service = new UsageService(source);
   const calls = [];
   let meta;
   page.on('pageerror', e => errors.push(e.message));
@@ -63,6 +63,14 @@ export async function checkEmbeddedUi(browser, errors, capture) {
     await frame.getByRole('checkbox', { name: '自动刷新' }).uncheck();
     expect(await frame.locator('.session-name').allTextContents()).toEqual(beforeOrder);
     await expect(frame.getByRole('heading', { name: 'Token 插件开发' })).toBeVisible();
+    const lock = new DatabaseSync(join(source.dataDir, 'usage-v1.sqlite'));
+    try {
+      lock.prepare("UPDATE lease SET owner='other-panel',until_ms=?").run(Date.now() + 60_000);
+      await frame.getByRole('button', { name: '刷新', exact: true }).click();
+      await expect(frame.getByRole('status')).toHaveText('仍在索引，完成后可再次刷新。', { timeout: 10_000 });
+      expect(await frame.locator('.session-name').allTextContents()).toEqual(beforeOrder);
+      await capture(frame.locator('.app'), 'refresh-pending.png');
+    } finally { lock.exec("UPDATE lease SET owner=NULL,until_ms=0 WHERE owner='other-panel'"); lock.close(); }
     await frame.getByRole('button', { name: '刷新', exact: true }).click();
     await expect(frame.locator('.session-name').first()).toHaveText('历史数据导入');
     await expect(frame.getByRole('heading', { name: 'Token 插件开发' })).toBeVisible();
@@ -129,5 +137,5 @@ export async function checkEmbeddedUi(browser, errors, capture) {
     await frame.getByRole('button', { name: '刷新', exact: true }).click();
     await expect(frame.locator('h2')).toHaveCount(0);
     await expect(frame.getByText('会话标识冲突，请重新打开面板。')).toBeVisible();
-  } finally { await page.close(); await service.close(); }
+  } finally { try { await page.close(); } finally { await service.close(); } }
 }

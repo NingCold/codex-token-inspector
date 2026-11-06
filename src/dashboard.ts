@@ -29,6 +29,7 @@ export function prepareDashboardView({ threads: catalog, sources: filesByPath, r
   const threads = new Map(catalog.map(t => [t.id, t]));
   const byThread = new Map<string, { models: Map<string, Totals>; unknownModelRequests: number }>();
   const diagnostics = new Map<string, Set<string>>();
+  const rejectedUsage = new Set<string>();
   const warn = (id: string, message: string) => { if (!diagnostics.has(id)) diagnostics.set(id, new Set()); diagnostics.get(id)!.add(message); };
   const unique = new Map<string, IndexedRequest>();
   const conflict = new Set<string>(), modelConflicts = new Set<string>(), responseOwners = new Map<string, Set<string>>();
@@ -37,7 +38,7 @@ export function prepareDashboardView({ threads: catalog, sources: filesByPath, r
     if (!threads.has(record.threadId)) threads.set(record.threadId, { id: record.threadId, title: record.threadId, cwd: '', parentId: null, kind: 'main', nickname: null, archived: false, updatedAt: Date.parse(record.timestamp) || 0 });
     if (!record.responseId) {
       warn(record.threadId, '部分请求缺少响应标识，无法可靠跨文件去重');
-      if (record.owner !== record.threadId) continue;
+      if (record.owner !== record.threadId) { rejectedUsage.add(record.threadId); continue; }
     } else {
       if (!responseOwners.has(record.responseId)) responseOwners.set(record.responseId, new Set());
       responseOwners.get(record.responseId)!.add(record.threadId);
@@ -56,8 +57,8 @@ export function prepareDashboardView({ threads: catalog, sources: filesByPath, r
     }
   }
   for (const [key, record] of unique) {
-    if (record.responseId && (responseOwners.get(record.responseId)?.size ?? 0) > 1) { warn(record.threadId, '同一响应关联多个线程，已排除归属不明的请求'); continue; }
-    if (conflict.has(key)) continue;
+    if (record.responseId && (responseOwners.get(record.responseId)?.size ?? 0) > 1) { rejectedUsage.add(record.threadId); warn(record.threadId, '同一响应关联多个线程，已排除归属不明的请求'); continue; }
+    if (conflict.has(key)) { rejectedUsage.add(record.threadId); continue; }
     if (modelConflicts.has(key)) record.model = null;
     let group = byThread.get(record.threadId);
     if (!group) byThread.set(record.threadId, group = { models: new Map(), unknownModelRequests: 0 });
@@ -67,17 +68,21 @@ export function prepareDashboardView({ threads: catalog, sources: filesByPath, r
   const sources = new Map<string, typeof filesByPath>();
   const availableByIdentity = new Map<string, typeof filesByPath>();
   for (const source of filesByPath.filter(s => s.available)) {
+    if (source.state.invalidUsage) for (const thread of source.state.invalidThreads ?? [null]) {
+      const id = thread ?? source.owner;
+      if (id) { rejectedUsage.add(id); warn(id, '日志包含无法解析或无效的用量记录'); }
+    }
     if (!availableByIdentity.has(source.identity)) availableByIdentity.set(source.identity, []);
     availableByIdentity.get(source.identity)!.push(source);
   }
   for (const source of filesByPath) if (source.owner) {
     // A rename preserves file identity. Another file for the same thread is not proof of a move.
     const relocated = !source.available && source.error === '日志文件未找到'
-      && availableByIdentity.get(source.identity)?.some(s => s.owner === source.owner && s.offset >= source.offset);
+      && availableByIdentity.get(source.identity)?.some(s => s.owner === source.owner && (s.evidenceOffset ?? s.offset) >= (source.evidenceOffset ?? source.offset));
     if (relocated) continue;
     if (!sources.has(source.owner)) sources.set(source.owner, []);
     sources.get(source.owner)!.push(source);
-    if (source.state.malformed || source.state.invalidUsage) warn(source.owner, '日志包含无法解析或无效的用量记录');
+    if (source.state.malformed) warn(source.owner, '日志包含无法解析或无效的用量记录');
     if (source.state.totalMismatches) warn(source.owner, '来源总量与输入加输出不一致，按输入加输出统计');
     if (source.error) warn(source.owner, source.error);
   }
@@ -86,8 +91,8 @@ export function prepareDashboardView({ threads: catalog, sources: filesByPath, r
     const { models, unknownModelRequests } = byThread.get(t.id) ?? { models: new Map<string, Totals>(), unknownModelRequests: 0 };
     const files = (sources.get(t.id) ?? []).filter(s => s.available);
     const totals = sumTotals(models.values());
-    let basis = totals.requests ? 'requests' : 'empty';
-    const legacy = files.filter(s => s.state.usageCount === 0 && s.state.lastSnapshot && s.state.legacySafe).sort((a, b) => b.mtime - a.mtime)[0];
+    let basis = totals.requests ? 'requests' : rejectedUsage.has(t.id) ? 'unknown' : 'empty';
+    const legacy = files.filter(s => s.state.usageCount === 0 && s.state.lastSnapshot && s.state.legacySafe).sort((a, b) => (b.evidenceMtime ?? b.mtime) - (a.evidenceMtime ?? a.mtime))[0];
     if (!totals.requests && legacy?.state.lastSnapshot) {
       addUsage(totals, legacy.state.lastSnapshot, 0); basis = 'snapshot';
       models.set('未知模型（累计快照）', totals);

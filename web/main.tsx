@@ -52,7 +52,7 @@ function DashboardApp() {
     if (!connection.current) return;
     query.current = { ...next, refresh: false };
     const id = ++sequence.current; setBusy(true); setError('');
-    try { const result = await connection.current.query(next); if (id === sequence.current) acceptData(result, next.refresh === true); }
+    try { const result = await connection.current.query(next); if (id === sequence.current) acceptData(result, next.refresh === true && !result.index.refreshPending && !result.index.error); }
     catch (e) { if (id === sequence.current) { setError(e instanceof Error ? e.message : String(e)); setScopeChildren(data?.scope.includeChildren ?? true); } }
     finally { if (id === sequence.current) setBusy(false); }
   }
@@ -100,6 +100,7 @@ function DashboardApp() {
       <section className="detail" aria-label="用量详情">
         {error && <div role="alert" className="error">{error}</div>}
         {data?.index.error && <div role="alert" className="error">{data.index.error}</div>}
+        {data?.index.refreshPending && <div className="index-notice" role="status">仍在索引，完成后可再次刷新。</div>}
         {busy && !current && !error && <div className="empty" role="status">加载中…</div>}
         {current && <>
           <div className="detail-header"><div><div className="eyebrow">会话详情 / {current.project}</div><h2>{current.title}</h2></div>

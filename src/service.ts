@@ -13,9 +13,10 @@ export class UsageService {
   }
   async queryParsed(query: ParsedQuery, requestMeta?: unknown, waitForIndex = false) {
     const binding = resolveBinding(requestMeta, query.view === 'current' ? query.sessionId : undefined);
-    const refresh = this.index.refresh(binding.threadId ?? query.sessionId, waitForIndex || query.refresh);
+    const refresh = this.index.refresh(binding.threadId ?? query.sessionId, waitForIndex || query.refresh, query.refresh ? 5000 : Infinity);
     // Warm view changes never wait for disk scanning. Polling picks up committed generations.
-    if (!this.prepared || waitForIndex || query.refresh) { await refresh; this.backgroundError = null; }
+    let pending = false;
+    if (!this.prepared || waitForIndex || query.refresh) { pending = await refresh === 'pending'; this.backgroundError = null; }
     else void refresh.then(() => { this.backgroundError = null; }, error => { this.backgroundError = error instanceof Error ? error.message : String(error); });
     const generation = this.index.generation();
     if (!this.prepared || generation !== this.generation) {
@@ -23,7 +24,7 @@ export class UsageService {
       this.generation = generation;
     }
     const status = this.index.status();
-    return this.prepared(query, binding, { ...status, error: status.error || this.backgroundError });
+    return this.prepared(query, binding, { ...status, ...(pending ? { refreshPending: true } : {}), error: status.error || this.backgroundError });
   }
   close() { return this.index.close(); }
 }
