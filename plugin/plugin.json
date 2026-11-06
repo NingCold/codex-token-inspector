@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-token-inspector",
+  "version": "0.2.7",
+  "description": "Read local Codex token usage with automatic current-thread binding, model breakdowns and subagent accounting.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Token 用量",
+        "shortDescription": "查看会话、模型与子代理的 Token 用量",
+        "longDescription": "只读本机日志，自动关联当前会话，查看真实 Token、缓存命中率、模型和子代理明细。支持独立增量索引和本地网页回退。",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": "打开 Token 用量面板。"
+      }
+    }
+  }
+}

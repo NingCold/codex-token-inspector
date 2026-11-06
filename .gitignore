@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+.cache/
+tmp/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+
+# Public guides; keep working notes and test artifacts local.
+/docs/*
+!/docs/installation.md
+!/docs/development.md
+/PLAN.md
+/assets/ui-concept.png

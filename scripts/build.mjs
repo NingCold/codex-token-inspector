@@ -1,0 +1,11 @@
+import { build } from 'esbuild';
+import { mkdir, writeFile } from 'node:fs/promises';
+await mkdir('plugin/dist', { recursive: true });
+const browser = await build({ entryPoints: ['web/main.tsx'], outfile: 'dashboard.js', bundle: true, write: false, minify: true, platform: 'browser', format: 'iife', target: 'es2022', define: { 'process.env.NODE_ENV': '"production"' } });
+const script = browser.outputFiles.find(f => f.path.endsWith('.js')) ?? browser.outputFiles.find(f => f.path === '<stdout>');
+const style = browser.outputFiles.find(f => f.path.endsWith('.css'));
+if (!script) throw new Error('Missing browser bundle');
+const html = `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Token 用量 · Codex Token Inspector</title><style>${style?.text ?? ''}</style></head><body><div id="root"></div><script>${script.text.replace(/<\/script/gi, '<\\/script')}</script></body></html>`;
+await writeFile('plugin/dist/dashboard.html', html);
+await build({ entryPoints: ['src/server.ts'], outfile: 'plugin/dist/server.mjs', bundle: true, platform: 'node', format: 'esm', target: 'node24', sourcemap: false, banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+console.log('Built self-contained MCP server and dashboard');

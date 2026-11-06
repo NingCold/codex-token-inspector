@@ -1,0 +1,9 @@
+{
+  "name": "codex-token-inspector-local",
+  "interface": { "displayName": "本地 Codex 工具" },
+  "plugins": [{
+    "name": "codex-token-inspector",
+    "source": { "source": "local", "path": "./plugin" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" }
+  }]
+}
