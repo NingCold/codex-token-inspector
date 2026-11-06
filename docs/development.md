@@ -16,6 +16,8 @@ npm run preview
 
 ## 运行测试
 
+[GitHub Actions](https://github.com/NingCold/codex-token-inspector/actions/workflows/ci.yml) 会在推送到 `main` 或向它提交 PR 时，用 Windows 和 Node.js 24 运行类型检查、构建、单元与集成测试，最后运行 Chromium 界面测试。
+
 ```sh
 npm run build
 npm run typecheck
