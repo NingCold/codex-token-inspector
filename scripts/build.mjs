@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { mkdir, writeFile } from 'node:fs/promises';
 await mkdir('plugin/dist', { recursive: true });
-const browser = await build({ entryPoints: ['web/main.tsx'], outfile: 'dashboard.js', bundle: true, write: false, minify: true, platform: 'browser', format: 'iife', target: 'es2022', define: { 'process.env.NODE_ENV': '"production"' } });
+const browser = await build({ entryPoints: ['web/main.tsx'], outfile: 'dashboard.js', bundle: true, write: false, minify: true, charset: 'utf8', platform: 'browser', format: 'iife', target: 'es2022', define: { 'process.env.NODE_ENV': '"production"' } });
 const script = browser.outputFiles.find(f => f.path.endsWith('.js')) ?? browser.outputFiles.find(f => f.path === '<stdout>');
 const style = browser.outputFiles.find(f => f.path.endsWith('.css'));
 if (!script) throw new Error('Missing browser bundle');

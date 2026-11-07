@@ -46,14 +46,17 @@ try {
   await expect(page.getByRole('button', { name: '本会话', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.reload(); await expect(page.getByRole('heading', { name: 'Token 插件开发' })).toBeVisible();
   await expect(page.locator('.metric').nth(0)).toContainText('6.00M');
+  await expect(page.locator('.summary > strong')).toHaveAttribute('title', '6,200,000 Token');
   await page.getByRole('switch', { name: '包含子代理' }).uncheck(); await expect(page.locator('.metric').nth(0)).toContainText('2.40M');
+  await expect(page.locator('.summary > strong')).toHaveText('2.48M');
   await expect(page.locator('tbody tr:not(.children-control)')).toHaveCount(1);
   await page.getByRole('switch', { name: '包含子代理' }).check(); await expect(page.locator('tbody tr:not(.children-control)')).toHaveCount(1);
   await page.getByRole('button', { name: '展开子代理（3）' }).click(); await expect(page.locator('tbody tr:not(.children-control)')).toHaveCount(4);
   await page.getByRole('button', { name: '收起子代理（3）' }).click(); await expect(page.locator('tbody tr:not(.children-control)')).toHaveCount(1);
   await expect(page.locator('.metric').nth(0)).toContainText('6.00M');
   await page.getByRole('button', { name: '展开子代理（3）' }).click();
-  await page.getByRole('tab', { name: '按模型' }).click(); await expect(page.locator('tbody tr:not(.children-control)')).toHaveCount(4);
+  await page.getByRole('tab', { name: '代理明细' }).press('ArrowRight'); await expect(page.getByRole('tab', { name: '按模型' })).toBeFocused();
+  await expect(page.getByRole('tabpanel', { name: '按模型' }).locator('tbody tr')).toHaveCount(4);
   await page.getByRole('tab', { name: '代理明细' }).click();
   await page.getByRole('button', { name: '刷新', exact: true }).click(); await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '收起子代理（3）' })).toHaveAttribute('aria-expanded', 'true');

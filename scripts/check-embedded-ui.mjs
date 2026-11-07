@@ -100,6 +100,8 @@ export async function checkEmbeddedUi(browser, errors, capture) {
     await expect(fork.locator('.session-tokens')).toHaveText('—');
     await fork.click();
     await expect(frame.getByRole('heading', { name: '继承历史的分叉' })).toBeVisible();
+    await expect(frame.locator('.summary > strong')).toHaveText('—');
+    await expect(frame.locator('.cache-track')).toHaveCount(0);
     await expect(frame.locator('.metric').nth(0).locator('strong')).toHaveText('—');
     await expect(frame.locator('.metric').nth(1).locator('strong')).toHaveText('—');
     await expect(frame.locator('.cache-legend b')).toHaveText(['—', '—', '—']);
